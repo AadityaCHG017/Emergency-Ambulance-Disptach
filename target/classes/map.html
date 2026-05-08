@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Guardian Elite — Live Map</title>
+
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet"
+        href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        crossorigin=""/>
+
+  <!-- Leaflet JS -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          crossorigin=""></script>
+
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #0d1117;
+      font-family: 'Segoe UI', Arial, sans-serif;
+    }
+
+    #map { height: 100vh; width: 100%; }
+
+    /* ── Overlay info panel ────────────────────────────────────────────── */
+    #infoPanel {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      z-index: 1000;
+      background: rgba(13, 17, 23, 0.93);
+      color: #e6edf3;
+      padding: 14px 18px;
+      border-radius: 12px;
+      border: 1px solid rgba(255, 109, 0, 0.35);
+      min-width: 210px;
+      backdrop-filter: blur(8px);
+      box-shadow: 0 4px 24px rgba(0,0,0,0.55);
+    }
+
+    #infoPanel h3 {
+      color: #FF6D00;
+      font-size: 11px;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      margin-bottom: 10px;
+      border-bottom: 1px solid rgba(255,109,0,0.25);
+      padding-bottom: 6px;
+    }
+
+    .info-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin: 6px 0;
+      font-size: 13px;
+    }
+
+    .info-label { color: #8b949e; }
+    .info-value { color: #e6edf3; font-weight: 700; }
+
+    .live-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      margin-top: 10px;
+      padding: 3px 10px;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 700;
+      background: rgba(30, 111, 235, 0.25);
+      border: 1px solid #1f6feb;
+      color: #58a6ff;
+    }
+
+    .pulse-dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: #58a6ff;
+      animation: pulse 1.4s ease-in-out infinite;
+      display: inline-block;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50%       { opacity: 0.3; transform: scale(0.7); }
+    }
+
+    /* ── Legend ────────────────────────────────────────────────────────── */
+    #legend {
+      position: absolute;
+      bottom: 30px;
+      left: 12px;
+      z-index: 1000;
+      background: rgba(13, 17, 23, 0.90);
+      color: #e6edf3;
+      padding: 10px 14px;
+      border-radius: 10px;
+      border: 1px solid rgba(255,255,255,0.08);
+      font-size: 12px;
+    }
+
+    .legend-item { display: flex; align-items: center; gap: 7px; margin: 4px 0; }
+  </style>
+</head>
+<body>
+
+  <div id="map"></div>
+
+  <!-- Info overlay -->
+  <div id="infoPanel">
+    <h3>🚑 Live Dispatch</h3>
+    <div class="info-row">
+      <span class="info-label">Distance</span>
+      <span class="info-value" id="distanceVal">—</span>
+    </div>
+    <div class="info-row">
+      <span class="info-label">ETA</span>
+      <span class="info-value" id="etaVal">—</span>
+    </div>
+    <div class="info-row">
+      <span class="info-label">Status</span>
+      <span class="info-value" id="statusVal">Loading…</span>
+    </div>
+    <div class="live-badge">
+      <span class="pulse-dot"></span> LIVE
+    </div>
+  </div>
+
+  <!-- Legend -->
+  <div id="legend">
+    <div class="legend-item"><span>🚑</span> Ambulance</div>
+    <div class="legend-item"><span>📍</span> Patient</div>
+    <div class="legend-item"><span>🏥</span> Hospital</div>
+  </div>
+
+  <script>
+    // ── Map initialization ───────────────────────────────────────────────────
+    var map = L.map('map', {
+      center: [12.9716, 77.5946],   // Bangalore default
+      zoom: 12,
+      zoomControl: true
+    });
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+      maxZoom: 19
+    }).addTo(map);
+
+    // ── Custom emoji icons ───────────────────────────────────────────────────
+    function makeIcon(emoji, anchor) {
+      return L.divIcon({
+        html: '<div style="font-size:30px;line-height:1;filter:drop-shadow(0 2px 4px rgba(0,0,0,0.6));">' + emoji + '</div>',
+        iconSize:   [34, 34],
+        iconAnchor: anchor || [17, 17],
+        popupAnchor:[0, -20],
+        className:  'emoji-marker'
+      });
+    }
+
+    var AMB_ICON      = makeIcon('🚑',  [17, 17]);
+    var PATIENT_ICON  = makeIcon('📍',  [17, 34]);
+    var HOSPITAL_ICON = makeIcon('🏥',  [17, 34]);
+
+    // ── State ────────────────────────────────────────────────────────────────
+    var ambulanceMarker = null;
+    var patientMarker   = null;
+    var hospitalMarker  = null;
+    var routePolyline   = null;
+
+    // ── Public API (called via webEngine.executeScript) ──────────────────────
+
+    /** Place or move the ambulance marker. */
+    function updateAmbulance(lat, lon, popupHtml) {
+      var ll = [lat, lon];
+      if (!ambulanceMarker) {
+        ambulanceMarker = L.marker(ll, { icon: AMB_ICON, zIndexOffset: 200 })
+          .addTo(map)
+          .bindPopup(popupHtml || '<b>🚑 Ambulance</b>');
+      } else {
+        ambulanceMarker.setLatLng(ll);
+        if (popupHtml) ambulanceMarker.setPopupContent(popupHtml);
+      }
+    }
+
+    /** Place or move the patient / user-location marker. */
+    function updatePatient(lat, lon, popupHtml) {
+      var ll = [lat, lon];
+      if (!patientMarker) {
+        patientMarker = L.marker(ll, { icon: PATIENT_ICON, zIndexOffset: 100 })
+          .addTo(map)
+          .bindPopup(popupHtml || '<b>📍 Patient Location</b>');
+      } else {
+        patientMarker.setLatLng(ll);
+        if (popupHtml) patientMarker.setPopupContent(popupHtml);
+      }
+    }
+
+    /** Place or move the hospital destination marker. */
+    function updateHospital(lat, lon, popupHtml) {
+      var ll = [lat, lon];
+      if (!hospitalMarker) {
+        hospitalMarker = L.marker(ll, { icon: HOSPITAL_ICON, zIndexOffset: 150 })
+          .addTo(map)
+          .bindPopup(popupHtml || '<b>🏥 Hospital</b>');
+      } else {
+        hospitalMarker.setLatLng(ll);
+        if (popupHtml) hospitalMarker.setPopupContent(popupHtml);
+      }
+    }
+
+    /**
+     * Draw a route polyline from an OSRM GeoJSON coordinates JSON string.
+     * coordsJson: stringified array of [lon, lat] pairs, e.g. "[[77.6,12.9],[77.61,12.91]]"
+     */
+    function drawRoute(coordsJson) {
+      clearRoute();
+      try {
+        var coords = JSON.parse(coordsJson);
+        // OSRM returns [lon, lat]; Leaflet wants [lat, lon]
+        var latlngs = coords.map(function(c) { return [c[1], c[0]]; });
+        routePolyline = L.polyline(latlngs, {
+          color:   '#FF6D00',
+          weight:  5,
+          opacity: 0.88
+        }).addTo(map);
+        fitAll();
+      } catch(e) {
+        console.error('drawRoute error:', e);
+      }
+    }
+
+    /** Remove the current route polyline. */
+    function clearRoute() {
+      if (routePolyline) { map.removeLayer(routePolyline); routePolyline = null; }
+    }
+
+    /** Update the overlay info panel text. */
+    function updateInfoPanel(distance, eta, status) {
+      document.getElementById('distanceVal').textContent = distance;
+      document.getElementById('etaVal').textContent      = eta;
+      document.getElementById('statusVal').textContent   = status;
+    }
+
+    /**
+     * updateETA — JavaScript bridge method called from Java AmbulanceTracker.
+     * Identical to updateInfoPanel but also triggers a brief highlight flash
+     * so the user can see real-time ETA refreshes happening.
+     */
+    function updateETA(distance, eta, status) {
+      updateInfoPanel(distance, eta, status);
+      // Flash the ETA value to indicate a fresh calculation
+      var etaEl = document.getElementById('etaVal');
+      etaEl.style.transition = 'color 0.2s';
+      etaEl.style.color = '#FF6D00';
+      setTimeout(function() {
+        etaEl.style.color = '#e6edf3';
+      }, 400);
+    }
+
+    /** Fit the map to show all placed markers + route. */
+    function fitAll() {
+      var points = [];
+      if (ambulanceMarker) points.push(ambulanceMarker.getLatLng());
+      if (patientMarker)   points.push(patientMarker.getLatLng());
+      if (hospitalMarker)  points.push(hospitalMarker.getLatLng());
+      if (routePolyline)   routePolyline.getLatLngs().forEach(function(p){ points.push(p); });
+
+      if (points.length > 1) {
+        var grp = new L.LatLngBounds(points);
+        map.fitBounds(grp, { padding: [50, 50] });
+      } else if (points.length === 1) {
+        map.setView(points[0], 14);
+      }
+    }
+
+    /** Pan/zoom to a coordinate. */
+    function setCenter(lat, lon, zoom) {
+      map.setView([lat, lon], zoom || 13);
+    }
+  </script>
+</body>
+</html>
